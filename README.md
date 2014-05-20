@@ -1,4 +1,0 @@
-info-sharing
-============
-
-Information Sharing
