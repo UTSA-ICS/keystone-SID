@@ -33,6 +33,11 @@ class AssignmentType:
     GROUP_PROJECT = 'GroupProject'
     USER_DOMAIN = 'UserDomain'
     GROUP_DOMAIN = 'GroupDomain'
+    USER_SIP = 'UserSip'
+    USER_SID = 'UserSid'
+    GROUP_SIP = 'GroupSip'
+    GROUP_SID = 'GroupSid'
+
 
 
 class Assignment(assignment.Driver):
@@ -421,6 +426,7 @@ class Assignment(assignment.Driver):
 
             session.delete(tenant_ref)
 
+
     # domain crud
 
     @sql.handle_conflicts(conflict_type='domain')
@@ -543,6 +549,450 @@ class Assignment(assignment.Driver):
             q.delete(False)
 
 
+    # add sid & sip in class Assignment
+    def _get_sip(self, session, sip_id):
+        sip_ref = session.query(Sip).get(sip_id)
+        if sip_ref is None:
+            raise exception.SipNotFound(sip_id=sip_id)
+        return sip_ref
+
+    def get_sip(self, tenant_id):
+        with sql.transaction() as session:
+            return self._get_sip(session, tenant_id).to_dict()
+
+    def get_sip_by_name(self, tenant_name, sid_id):
+        with sql.transaction() as session:
+            query = session.query(Sip)
+            query = query.filter_by(name=tenant_name)
+            query = query.filter_by(sid_id=sid_id)
+            try:
+                sip_ref = query.one()
+            except sql.NotFound:
+                raise exception.SipNotFound(sip_id=tenant_name)
+            return sip_ref.to_dict()
+
+    def list_user_ids_for_sip(self, tenant_id):
+        with sql.transaction() as session:
+            self._get_sip(session, tenant_id)
+            query = session.query(RoleAssignment.actor_id)
+            query = query.filter_by(type=AssignmentType.USER_SIP)
+            query = query.filter_by(target_id=tenant_id)
+            assignments = query.all()
+            return [assignment.actor_id for assignment in assignments]
+
+    def _get_metadata_4sip(self, user_id=None, tenant_id=None,
+                      sid_id=None, group_id=None, session=None):
+        # TODO(henry-nash): This method represents the last vestiges of the old
+        # metadata concept in this driver.  Although we no longer need it here,
+        # since the Manager layer uses the metadata concept across all
+        # assignment drivers, we need to remove it from all of them in order to
+        # finally remove this method.
+
+        # We aren't given a session when called by the manager directly.
+        if session is None:
+            session = sql.get_session()
+
+        q = session.query(RoleAssignment)
+        q = q.filter_by(actor_id=user_id or group_id)
+        q = q.filter_by(target_id=tenant_id or sid_id)
+        refs = q.all()
+        if not refs:
+            raise exception.MetadataNotFound()
+
+        metadata_ref = {}
+        metadata_ref['roles'] = []
+        for assignment in refs:
+            role_ref = {}
+            role_ref['id'] = assignment.role_id
+            if assignment.inherited and (
+                    assignment.type == AssignmentType.USER_Sid or
+                    assignment.type == AssignmentType.GROUP_Sid):
+                role_ref['inherited_to'] = 'sips'
+            metadata_ref['roles'].append(role_ref)
+
+        return metadata_ref
+
+    def create_grant_4sip(self, role_id, user_id=None, group_id=None,
+                     sid_id=None, sip_id=None,
+                     inherited_to_sips=False):
+
+        def calculate_type(user_id, group_id, sip_id, sid_id):
+            if user_id and sip_id:
+                return AssignmentType.USER_SIP
+            elif user_id and sid_id:
+                return AssignmentType.USER_Sid
+            elif group_id and sip_id:
+                return AssignmentType.GROUP_SIP
+            elif group_id and sid_id:
+                return AssignmentType.GROUP_Sid
+            else:
+                message_data = ', '.join(
+                    [user_id, group_id, sip_id, sid_id])
+                raise exception.Error(message=_(
+                    'Unexpected combination of grant attributes - '
+                    'User, Group, Sip, Sid: %s') % message_data)
+
+        with sql.transaction() as session:
+            self._get_role(session, role_id)
+
+            if sid_id:
+                self._get_sid(session, sid_id)
+            if sip_id:
+                self._get_sip(session, sip_id)
+
+            if sip_id and inherited_to_sips:
+                msg = _('Inherited roles can only be assigned to sids')
+                raise exception.Conflict(type='role grant', details=msg)
+
+        type = calculate_type(user_id, group_id, sip_id, sid_id)
+        try:
+            with sql.transaction() as session:
+                session.add(RoleAssignment(
+                    type=type,
+                    actor_id=user_id or group_id,
+                    target_id=sip_id or sid_id,
+                    role_id=role_id,
+                    inherited=inherited_to_sips))
+        except sql.DBDuplicateEntry:
+            # The v3 grant APIs are silent if the assignment already exists
+            pass
+
+    def list_grants_4sip(self, user_id=None, group_id=None,
+                    sid_id=None, sip_id=None,
+                    inherited_to_sips=False):
+        with sql.transaction() as session:
+            if sid_id:
+                self._get_sid(session, sid_id)
+            if sip_id:
+                self._get_sip(session, sip_id)
+
+            q = session.query(Role).join(RoleAssignment)
+            q = q.filter(RoleAssignment.actor_id == (user_id or group_id))
+            q = q.filter(RoleAssignment.target_id == (sip_id or sid_id))
+            q = q.filter(RoleAssignment.inherited == inherited_to_sips)
+            q = q.filter(Role.id == RoleAssignment.role_id)
+            return [x.to_dict() for x in q.all()]
+
+    def _build_grant_filter_4sip(self, session, role_id, user_id, group_id,
+                            sid_id, sip_id, inherited_to_sips):
+        q = session.query(RoleAssignment)
+        q = q.filter_by(actor_id=user_id or group_id)
+        q = q.filter_by(target_id=sip_id or sid_id)
+        q = q.filter_by(role_id=role_id)
+        q = q.filter_by(inherited=inherited_to_sips)
+        return q
+
+    def get_grant_4sip(self, role_id, user_id=None, group_id=None,
+                  sid_id=None, sip_id=None,
+                  inherited_to_sips=False):
+        with sql.transaction() as session:
+            role_ref = self._get_role(session, role_id)
+            if sid_id:
+                self._get_sid(session, sid_id)
+            if sip_id:
+                self._get_sip(session, sip_id)
+
+            try:
+                q = self._build_grant_filter(
+                    session, role_id, user_id, group_id, sid_id, sip_id,
+                    inherited_to_sips)
+                q.one()
+            except sql.NotFound:
+                raise exception.RoleNotFound(role_id=role_id)
+
+            return role_ref.to_dict()
+
+    def delete_grant_4sip(self, role_id, user_id=None, group_id=None,
+                     sid_id=None, sip_id=None,
+                     inherited_to_sips=False):
+        with sql.transaction() as session:
+            self._get_role(session, role_id)
+            if sid_id:
+                self._get_sid(session, sid_id)
+            if sip_id:
+                self._get_sip(session, sip_id)
+
+            q = self._build_grant_filter(
+                session, role_id, user_id, group_id, sid_id, sip_id,
+                inherited_to_sips)
+            if not q.delete(False):
+                raise exception.RoleNotFound(role_id=role_id)
+
+    @sql.truncated
+    def list_sips(self, hints):
+        with sql.transaction() as session:
+            query = session.query(Sip)
+            sip_refs = sql.filter_limit_query(Sip, query, hints)
+            return [sip_ref.to_dict() for sip_ref in sip_refs]
+
+    def list_sips_in_sid(self, sid_id):
+        with sql.transaction() as session:
+            self._get_sid(session, sid_id)
+            query = session.query(Sip)
+            sip_refs = query.filter_by(sid_id=sid_id)
+            return [sip_ref.to_dict() for sip_ref in sip_refs]
+
+    def list_sips_for_user(self, user_id, group_ids, hints):
+        # TODO(henry-nash): Now that we have a single assignment table, we
+        # should be able to honor the hints list that is provided.
+
+        def _sip_ids_to_dicts(session, ids):
+            if not ids:
+                return []
+            else:
+                query = session.query(Sip)
+                query = query.filter(Sip.id.in_(ids))
+                sip_refs = query.all()
+                return [sip_ref.to_dict() for sip_ref in sip_refs]
+
+        with sql.transaction() as session:
+            # First get a list of the sips and sids for which the user
+            # has any kind of role assigned
+
+            actor_list = [user_id]
+            if group_ids:
+                actor_list = actor_list + group_ids
+
+            query = session.query(RoleAssignment)
+            query = query.filter(RoleAssignment.actor_id.in_(actor_list))
+            assignments = query.all()
+
+            sip_ids = set()
+            for assignment in assignments:
+                if (assignment.type == AssignmentType.USER_SIP or
+                        assignment.type == AssignmentType.GROUP_SIP):
+                    sip_ids.add(assignment.target_id)
+
+            if not CONF.os_inherit.enabled:
+                return _sip_ids_to_dicts(session, sip_ids)
+
+            # Inherited roles are enabled, so check to see if this user has any
+            # such roles (direct or group) on any sid, in which case we must
+            # add in all the sips in that sid.
+
+            sid_ids = set()
+            for assignment in assignments:
+                if ((assignment.type == AssignmentType.USER_Sid or
+                    assignment.type == AssignmentType.GROUP_Sid) and
+                        assignment.inherited):
+                    sid_ids.add(assignment.target_id)
+
+            # Get the sips that are owned by all of these sids and
+            # add them in to the sip id list
+
+            if sid_ids:
+                query = session.query(Sip.id)
+                query = query.filter(Sip.sid_id.in_(sid_ids))
+                for sip_ref in query.all():
+                    sip_ids.add(sip_ref.id)
+
+            return _sip_ids_to_dicts(session, sip_ids)
+
+    def get_roles_for_groups_4sip(self, group_ids, sip_id=None, sid_id=None):
+
+        if sip_id is not None:
+            assignment_type = AssignmentType.GROUP_SIP
+            target_id = sip_id
+        elif sid_id is not None:
+            assignment_type = AssignmentType.GROUP_Sid
+            target_id = sid_id
+        else:
+            raise AttributeError(_("Must specify either sid or sip"))
+
+        sql_constraints = sqlalchemy.and_(
+            RoleAssignment.type == assignment_type,
+            RoleAssignment.target_id == target_id,
+            Role.id == RoleAssignment.role_id,
+            RoleAssignment.actor_id.in_(group_ids))
+
+        session = sql.get_session()
+        with session.begin():
+            query = session.query(Role).filter(
+                sql_constraints).distinct()
+        return [role.to_dict() for role in query.all()]
+
+    def _list_entities_for_groups_4sip(self, group_ids, entity):
+        if entity == Sid:
+            assignment_type = AssignmentType.GROUP_Sid
+        else:
+            assignment_type = AssignmentType.GROUP_SIP
+
+        group_sql_conditions = sqlalchemy.and_(
+            RoleAssignment.type == assignment_type,
+            entity.id == RoleAssignment.target_id,
+            RoleAssignment.actor_id.in_(group_ids))
+
+        session = sql.get_session()
+        with session.begin():
+            query = session.query(entity).filter(
+                group_sql_conditions)
+        return [x.to_dict() for x in query.all()]
+
+    def list_sips_for_groups(self, group_ids):
+        return self._list_entities_for_groups(group_ids, Sip)
+
+    def list_sids_for_groups(self, group_ids):
+        return self._list_entities_for_groups(group_ids, Sid)
+
+    def add_role_to_user_and_sip(self, user_id, tenant_id, role_id):
+        with sql.transaction() as session:
+            self._get_sip(session, tenant_id)
+            self._get_role(session, role_id)
+
+        try:
+            with sql.transaction() as session:
+                session.add(RoleAssignment(
+                    type=AssignmentType.USER_SIP,
+                    actor_id=user_id, target_id=tenant_id,
+                    role_id=role_id, inherited=False))
+        except sql.DBDuplicateEntry:
+            msg = ('User %s already has role %s in tenant %s'
+                   % (user_id, role_id, tenant_id))
+            raise exception.Conflict(type='role grant', details=msg)
+
+    def remove_role_from_user_and_sip(self, user_id, tenant_id, role_id):
+        with sql.transaction() as session:
+            q = session.query(RoleAssignment)
+            q = q.filter_by(actor_id=user_id)
+            q = q.filter_by(target_id=tenant_id)
+            q = q.filter_by(role_id=role_id)
+            if q.delete() == 0:
+                raise exception.RoleNotFound(message=_(
+                    'Cannot remove role that has not been granted, %s') %
+                    role_id)
+
+    def list_role_assignments_4sip(self):
+
+        def denormalize_role(ref):
+            assignment = {}
+            if ref.type == AssignmentType.USER_SIP:
+                assignment['user_id'] = ref.actor_id
+                assignment['sip_id'] = ref.target_id
+            elif ref.type == AssignmentType.USER_Sid:
+                assignment['user_id'] = ref.actor_id
+                assignment['sid_id'] = ref.target_id
+            elif ref.type == AssignmentType.GROUP_SIP:
+                assignment['group_id'] = ref.actor_id
+                assignment['sip_id'] = ref.target_id
+            elif ref.type == AssignmentType.GROUP_Sid:
+                assignment['group_id'] = ref.actor_id
+                assignment['sid_id'] = ref.target_id
+            else:
+                raise exception.Error(message=_(
+                    'Unexpected assignment type encountered, %s') %
+                    ref.type)
+            assignment['role_id'] = ref.role_id
+            if ref.inherited and (ref.type == AssignmentType.USER_Sid or
+                                  ref.type == AssignmentType.GROUP_Sid):
+                assignment['inherited_to_sips'] = 'sips'
+            return assignment
+
+        with sql.transaction() as session:
+            refs = session.query(RoleAssignment).all()
+            return [denormalize_role(ref) for ref in refs]
+
+    # sip crud 
+    @sql.handle_conflicts(conflict_type='sip')
+    def create_sip(self, tenant_id, tenant):
+        tenant['name'] = clean.sip_name(tenant['name'])
+        with sql.transaction() as session:
+            tenant_ref = Sip.from_dict(tenant)
+            session.add(tenant_ref)
+            return tenant_ref.to_dict()
+
+    @sql.handle_conflicts(conflict_type='sip')
+    def update_sip(self, tenant_id, tenant):
+        if 'name' in tenant:
+            tenant['name'] = clean.sip_name(tenant['name'])
+
+        with sql.transaction() as session:
+            tenant_ref = self._get_sip(session, tenant_id)
+            old_sip_dict = tenant_ref.to_dict()
+            for k in tenant:
+                old_sip_dict[k] = tenant[k]
+            new_sip = Sip.from_dict(old_sip_dict)
+            for attr in Sip.attributes:
+                if attr != 'id':
+                    setattr(tenant_ref, attr, getattr(new_sip, attr))
+            tenant_ref.extra = new_sip.extra
+            return tenant_ref.to_dict(include_extra_dict=True)
+
+    @sql.handle_conflicts(conflict_type='sip')
+    def delete_sip(self, tenant_id):
+        with sql.transaction() as session:
+            tenant_ref = self._get_sip(session, tenant_id)
+
+            q = session.query(RoleAssignment)
+            q = q.filter_by(target_id=tenant_id)
+            q.delete(False)
+
+            session.delete(tenant_ref)
+
+
+    # sid crud
+    @sql.handle_conflicts(conflict_type='sid')
+    def create_sid(self, sid_id, sid):
+        with sql.transaction() as session:
+            ref = Sid.from_dict(sid)
+            session.add(ref)
+        return ref.to_dict()
+
+    @sql.truncated
+    def list_sids(self, hints):
+        with sql.transaction() as session:
+            query = session.query(Sid)
+            refs = sql.filter_limit_query(Sid, query, hints)
+            return [ref.to_dict() for ref in refs]
+
+    def _get_sid(self, session, sid_id):
+        ref = session.query(Sid).get(sid_id)
+        if ref is None:
+            raise exception.SidNotFound(sid_id=sid_id)
+        return ref
+
+    def get_sid(self, sid_id):
+        with sql.transaction() as session:
+            return self._get_sid(session, sid_id).to_dict()
+
+    def get_sid_by_name(self, sid_name):
+        with sql.transaction() as session:
+            try:
+                ref = (session.query(Sid).
+                       filter_by(name=sid_name).one())
+            except sql.NotFound:
+                raise exception.SidNotFound(sid_id=sid_name)
+            return ref.to_dict()
+
+    @sql.handle_conflicts(conflict_type='sid')
+    def update_sid(self, sid_id, sid):
+        with sql.transaction() as session:
+            ref = self._get_sid(session, sid_id)
+            old_dict = ref.to_dict()
+            for k in sid:
+                old_dict[k] = sid[k]
+            new_sid = Sid.from_dict(old_dict)
+            for attr in Sid.attributes:
+                if attr != 'id':
+                    setattr(ref, attr, getattr(new_sid, attr))
+            ref.extra = new_sid.extra
+            return ref.to_dict()
+
+    def delete_sid(self, sid_id):
+        with sql.transaction() as session:
+            ref = self._get_sid(session, sid_id)
+
+            # TODO(henry-nash): Although the controller will ensure deletion of
+            # all users & groups within the sid (which will cause all
+            # assignments for those users/groups to also be deleted), there
+            # could still be assignments on this sid for users/groups in
+            # other sids - so we should delete these here (see Bug #1277847)
+
+            session.delete(ref)
+
+    # end of sid & sip part in class Assignment
+
+
+
 class Domain(sql.ModelBase, sql.DictBase):
     __tablename__ = 'domain'
     attributes = ['id', 'name', 'enabled']
@@ -584,6 +1034,8 @@ class RoleAssignment(sql.ModelBase, sql.DictBase):
     type = sql.Column(
         sql.Enum(AssignmentType.USER_PROJECT, AssignmentType.GROUP_PROJECT,
                  AssignmentType.USER_DOMAIN, AssignmentType.GROUP_DOMAIN,
+                 AssignmentType.USER_SIP, AssignmentType.GROUP_SIP,
+                 AssignmentType.USER_SID, AssignmentType.GROUP_SID,
                  name='type'),
         nullable=False)
     actor_id = sql.Column(sql.String(64), nullable=False)
@@ -601,3 +1053,34 @@ class RoleAssignment(sql.ModelBase, sql.DictBase):
         parent implementation is not applicable.
         """
         return dict(six.iteritems(self))
+
+
+# add sid & sip class 
+class Sid(sql.ModelBase, sql.DictBase):
+    __tablename__ = 'sid'
+    attributes = ['id', 'name', 'enabled']
+    id = sql.Column(sql.String(64), primary_key=True)
+    name = sql.Column(sql.String(64), nullable=False)
+    enabled = sql.Column(sql.Boolean, default=True, nullable=False)
+    extra = sql.Column(sql.JsonBlob())
+    __table_args__ = (sql.UniqueConstraint('name'), {})
+
+
+
+class Sip(sql.ModelBase, sql.DictBase):
+    __tablename__ = 'sip'
+    attributes = ['id', 'name', 'sid_id', 'description', 'enabled']
+    id = sql.Column(sql.String(64), primary_key=True)
+    name = sql.Column(sql.String(64), nullable=False)
+    sid_id = sql.Column(sql.String(64), sql.ForeignKey('sid.id'),
+                           nullable=False)
+    description = sql.Column(sql.Text())
+    enabled = sql.Column(sql.Boolean)
+    extra = sql.Column(sql.JsonBlob())
+    # Unique constraint across two columns to create the separation
+    # rather than just only 'name' being unique
+    __table_args__ = (sql.UniqueConstraint('sid_id', 'name'), {})
+
+
+
+# end of sid & sip class 

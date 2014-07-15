@@ -139,6 +139,14 @@ FILE_OPTIONS = {
                         'this domain, other than the fact that it must '
                         'exist to order to maintain support for your v2 '
                         'clients.'),
+	# add sid & sip 
+        cfg.StrOpt('default_sid_id', default='defaultsid',
+                   help='This references the sid to use for all sips.'
+                        'The sid referenced by this ID cannot be '
+                        'deleted on the v3 API, to prevent accidentally '
+                        'breaking the v2 API. There is nothing special about '
+                        'this sid.' ),
+	# end of sid & sip part 
         cfg.BoolOpt('domain_specific_drivers_enabled',
                     default=False,
                     help='A subset (or all) of domains can have their own '

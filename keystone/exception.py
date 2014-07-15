@@ -222,6 +222,14 @@ class ProjectNotFound(NotFound):
     message_format = _("Could not find project, %(project_id)s.")
 
 
+class SidNotFound(NotFound):
+    message_format = _("Could not find sid, %(sid_id)s.")
+
+
+class SipNotFound(NotFound):
+    message_format = _("Could not find sip, %(sip_id)s.")
+
+
 class TokenNotFound(NotFound):
     message_format = _("Could not find token, %(token_id)s.")
 

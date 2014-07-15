@@ -80,6 +80,12 @@ def v3_token_to_auth_context(token):
         LOG.debug(_('RBAC: Proceeding without project'))
     if 'domain' in token_data:
         creds['domain_id'] = token_data['domain']['id']
+    if 'sip' in token_data:
+        creds['sip_id'] = token_data['sip']['id']
+    else:
+        LOG.debug(_('RBAC: Proceeding without sip'))
+    if 'sid' in token_data:
+        creds['sid_id'] = token_data['sid']['id']
     if 'roles' in token_data:
         creds['roles'] = []
         for role in token_data['roles']:

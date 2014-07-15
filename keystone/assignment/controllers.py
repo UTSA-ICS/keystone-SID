@@ -342,6 +342,7 @@ class Role(controller.V2Controller):
             user_id, tenant_id, role_id)
 
 
+
 @dependency.requires('assignment_api')
 class DomainV3(controller.V3Controller):
     collection_name = 'domains'
@@ -428,6 +429,97 @@ class ProjectV3(controller.V3Controller):
     @controller.protected()
     def delete_project(self, context, project_id):
         return self.assignment_api.delete_project(project_id)
+
+
+# add sid controller
+@dependency.requires('assignment_api')
+class SidV3(controller.V3Controller):
+    collection_name = 'sids'
+    member_name = 'sid'
+
+    def __init__(self):
+        super(SidV3, self).__init__()
+        self.get_member_from_driver = self.assignment_api.get_sid
+
+    @controller.protected()
+    def create_sid(self, context, sid):
+        self._require_attribute(sid, 'name')
+
+        ref = self._assign_unique_id(self._normalize_dict(sid))
+        ref = self.assignment_api.create_sid(ref['id'], ref)
+        return SidV3.wrap_member(context, ref)
+
+    @controller.filterprotected('enabled', 'name')
+    def list_sids(self, context, filters):
+        hints = SidV3.build_driver_hints(context, filters)
+        refs = self.assignment_api.list_sids(hints=hints)
+        return SidV3.wrap_collection(context, refs, hints=hints)
+
+    @controller.protected()
+    def get_sid(self, context, sid_id):
+        ref = self.assignment_api.get_sid(sid_id)
+        return SidV3.wrap_member(context, ref)
+
+    @controller.protected()
+    def update_sid(self, context, sid_id, sid):
+        self._require_matching_id(sid_id, sid)
+        ref = self.assignment_api.update_sid(sid_id, sid)
+        return SidV3.wrap_member(context, ref)
+
+    @controller.protected()
+    def delete_sid(self, context, sid_id):
+        return self.assignment_api.delete_sid(sid_id)
+
+
+# add sip controller
+@dependency.requires('assignment_api')
+class SipV3(controller.V3Controller):
+    collection_name = 'sips'
+    member_name = 'sip'
+
+    def __init__(self):
+        super(SipV3, self).__init__()
+        self.get_member_from_driver = self.assignment_api.get_sip
+
+    @controller.protected()
+    def create_sip(self, context, sip):
+        self._require_attribute(sip, 'name')
+
+        ref = self._assign_unique_id(self._normalize_dict(sip))
+        ref = self._normalize_sid_id(context, ref)
+        ref = self.assignment_api.create_sip(ref['id'], ref)
+        return SipV3.wrap_member(context, ref)
+
+    @controller.filterprotected('sid_id', 'enabled', 'name')
+    def list_sips(self, context, filters):
+        hints = SipV3.build_driver_hints(context, filters)
+        refs = self.assignment_api.list_sips(hints=hints)
+        return SipV3.wrap_collection(context, refs, hints=hints)
+
+    @controller.filterprotected('enabled', 'name')
+    def list_user_sips(self, context, filters, user_id):
+        hints = SipV3.build_driver_hints(context, filters)
+        refs = self.assignment_api.list_sips_for_user(user_id,
+                                                          hints=hints)
+        return SipV3.wrap_collection(context, refs, hints=hints)
+
+    @controller.protected()
+    def get_sip(self, context, sip_id):
+        ref = self.assignment_api.get_sip(sip_id)
+        return SipV3.wrap_member(context, ref)
+
+    @controller.protected()
+    def update_sip(self, context, sip_id, sip):
+        self._require_matching_id(sip_id, sip)
+        self._require_matching_sid_id(
+            sip_id, sip, self.assignment_api.get_sip)
+        ref = self.assignment_api.update_sip(sip_id, sip)
+        return SipV3.wrap_member(context, ref)
+
+    @controller.protected()
+    def delete_sip(self, context, sip_id):
+        return self.assignment_api.delete_sip(sip_id)
+
 
 
 @dependency.requires('assignment_api', 'identity_api')
@@ -556,6 +648,89 @@ class RoleV3(controller.V3Controller):
             self._check_if_inherited(context))
 
 
+    # add sid & sip role assignment 
+    def _require_sid_xor_sip(self, sid_id, sip_id):
+        if (sid_id and sip_id) or (not sid_id and not sip_id):
+            msg = _('Specify a sid or sip, not both')
+            raise exception.ValidationError(msg)
+
+    def _check_if_inherited_4sip(self, context):
+        return (CONF.os_inherit.enabled and
+                context['path'].startswith('/OS-INHERIT') and
+                context['path'].endswith('/inherited_to_sips'))
+
+    def _check_grant_protection_4sip(self, context, protection, role_id=None,
+                                user_id=None, group_id=None,
+                                sid_id=None, sip_id=None):
+        """Check protection for role grant APIs.
+
+        The policy rule might want to inspect attributes of any of the entities
+        involved in the grant.  So we get these and pass them to the
+        check_protection() handler in the controller.
+
+        """
+        ref = {}
+        if role_id:
+            ref['role'] = self.assignment_api.get_role(role_id)
+        if user_id:
+            ref['user'] = self.identity_api.get_user(user_id)
+        else:
+            ref['group'] = self.identity_api.get_group(group_id)
+
+        if sid_id:
+            ref['sid'] = self.assignment_api.get_sid(sid_id)
+        else:
+            ref['sip'] = self.assignment_api.get_sip(sip_id)
+
+        self.check_protection(context, protection, ref)
+
+    @controller.protected(callback=_check_grant_protection_4sip)
+    def create_grant_4sip(self, context, role_id, user_id=None,
+                     group_id=None, sid_id=None, sip_id=None):
+        """Grants a role to a user or group on either a sid or sip."""
+        self._require_sid_xor_sip(sid_id, sip_id)
+        self._require_user_xor_group(user_id, group_id)
+
+        self.assignment_api.create_grant_4sip(
+            role_id, user_id, group_id, sid_id, sip_id,
+            self._check_if_inherited_4sip(context))
+
+    @controller.protected(callback=_check_grant_protection_4sip)
+    def list_grants_4sip(self, context, user_id=None,
+                    group_id=None, sid_id=None, sip_id=None):
+        """Lists roles granted to user/group on either a sid or sip."""
+        self._require_sid_xor_sip(sid_id, sip_id)
+        self._require_user_xor_group(user_id, group_id)
+
+        refs = self.assignment_api.list_grants_4sip(
+            user_id, group_id, sid_id, sip_id,
+            self._check_if_inherited_4sip(context))
+        return RoleV3.wrap_collection(context, refs)
+
+    @controller.protected(callback=_check_grant_protection_4sip)
+    def check_grant_4sip(self, context, role_id, user_id=None,
+                    group_id=None, sid_id=None, sip_id=None):
+        """Checks if a role has been granted on either a sid or sip."""
+        self._require_sid_xor_sip(sid_id, sip_id)
+        self._require_user_xor_group(user_id, group_id)
+
+        self.assignment_api.get_grant_4sip(
+            role_id, user_id, group_id, sid_id, sip_id,
+            self._check_if_inherited_4sip(context))
+
+    @controller.protected(callback=_check_grant_protection_4sip)
+    def revoke_grant_4sip(self, context, role_id, user_id=None,
+                     group_id=None, sid_id=None, sip_id=None):
+        """Revokes a role from user/group on either a sid or sip."""
+        self._require_sid_xor_sip(sid_id, sip_id)
+        self._require_user_xor_group(user_id, group_id)
+
+        self.assignment_api.delete_grant_4sip(
+            role_id, user_id, group_id, sid_id, sip_id,
+            self._check_if_inherited_4sip(context))
+    # end of sid & sip 
+
+
 @dependency.requires('assignment_api', 'identity_api')
 class RoleAssignmentV3(controller.V3Controller):
 
@@ -640,6 +815,20 @@ class RoleAssignmentV3(controller.V3Controller):
                 suffix = '/inherited_to_projects'
             else:
                 target_link = '/domains/%s' % entity['domain_id']
+        if 'sip_id' in entity:
+            formatted_entity['scope'] = (
+                {'sip': {'id': entity['sip_id']}})
+            target_link = '/sips/%s' % entity['sip_id']
+        if 'sid_id' in entity:
+            formatted_entity['scope'] = (
+                {'sid': {'id': entity['sid_id']}})
+            if 'inherited_to_sips' in entity:
+                formatted_entity['scope']['OS-INHERIT:inherited_to'] = (
+                    'sips')
+                target_link = '/OS-INHERIT/sids/%s' % entity['sid_id']
+                suffix = '/inherited_to_sips'
+            else:
+                target_link = '/sids/%s' % entity['sid_id']
         formatted_entity.setdefault('links', {})
 
         path = '%(target)s/%(actor)s/roles/%(role)s%(suffix)s' % {

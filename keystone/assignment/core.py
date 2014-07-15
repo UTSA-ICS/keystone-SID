@@ -308,6 +308,7 @@ class Manager(manager.Manager):
             self.get_domain_by_name.set(ret, self, ret['name'])
         return ret
 
+
     @manager.response_truncated
     def list_domains(self, hints=None):
         return self.driver.list_domains(hints or driver_hints.Hints())
@@ -411,6 +412,7 @@ class Manager(manager.Manager):
                                 'continuing with cleanup.'),
                               {'userid': user['id'],
                                'domainid': domain_id})
+
 
     @manager.response_truncated
     def list_projects(self, hints=None):
@@ -587,6 +589,492 @@ class Manager(manager.Manager):
         self.token_api.delete_tokens_for_users(user_ids)
         for user_id, project_id in user_and_project_ids_to_action:
             self.token_api.delete_tokens_for_user(user_id, project_id)
+
+
+
+    # add sid & sip 
+    _SIP = 'sip'
+
+    @notifications.created(_SIP)
+    def create_sip(self, tenant_id, tenant):
+        tenant = tenant.copy()
+        tenant.setdefault('enabled', True)
+        tenant['enabled'] = clean.sip_enabled(tenant['enabled'])
+        tenant.setdefault('description', '')
+        ret = self.driver.create_sip(tenant_id, tenant)
+        if SHOULD_CACHE(ret):
+            self.get_sip.set(ret, self, tenant_id)
+            self.get_sip_by_name.set(ret, self, ret['name'],
+                                         ret['sid_id'])
+        return ret
+
+    @notifications.disabled(_SIP, public=False)
+    def _disable_sip(self, tenant_id):
+        return self.token_api.delete_tokens_for_users(
+            self.list_user_ids_for_sip(tenant_id),
+            sip_id=tenant_id)
+
+    @notifications.updated(_SIP)
+    def update_sip(self, tenant_id, tenant):
+        tenant = tenant.copy()
+        if 'enabled' in tenant:
+            tenant['enabled'] = clean.sip_enabled(tenant['enabled'])
+        if not tenant.get('enabled', True):
+            self._disable_sip(tenant_id)
+        ret = self.driver.update_sip(tenant_id, tenant)
+        self.get_sip.invalidate(self, tenant_id)
+        self.get_sip_by_name.invalidate(self, ret['name'],
+                                            ret['sid_id'])
+        return ret
+
+    @notifications.deleted(_SIP)
+    def delete_sip(self, tenant_id):
+        sip = self.driver.get_sip(tenant_id)
+        user_ids = self.list_user_ids_for_sip(tenant_id)
+        self.token_api.delete_tokens_for_users(user_ids, sip_id=tenant_id)
+        ret = self.driver.delete_sip(tenant_id)
+        self.get_sip.invalidate(self, tenant_id)
+        self.get_sip_by_name.invalidate(self, sip['name'],
+                                            sip['sid_id'])
+        self.credential_api.delete_credentials_for_sip(tenant_id)
+        return ret
+
+    def get_roles_for_user_and_sip(self, user_id, tenant_id):
+        """Get the roles associated with a user within given sip.
+
+        This includes roles directly assigned to the user on the
+        sip, as well as those by virtue of group membership. If
+        the OS-INHERIT extension is enabled, then this will also
+        include roles inherited from the sid.
+
+        :returns: a list of role ids.
+        :raises: keystone.exception.UserNotFound,
+                 keystone.exception.ProjectNotFound
+
+        """
+        def _get_group_sip_roles(user_id, sip_ref):
+            role_list = []
+            group_refs = self.identity_api.list_groups_for_user(user_id)
+            for x in group_refs:
+                try:
+                    metadata_ref = self._get_metadata(
+                        group_id=x['id'], tenant_id=sip_ref['id'])
+                    role_list += self._roles_from_role_dicts(
+                        metadata_ref.get('roles', {}), False)
+                except exception.MetadataNotFound:
+                    # no group grant, skip
+                    pass
+
+                if CONF.os_inherit.enabled:
+                    # Now get any inherited group roles for the owning sid
+                    try:
+                        metadata_ref = self._get_metadata(
+                            group_id=x['id'],
+                            sid_id=sip_ref['sid_id'])
+                        role_list += self._roles_from_role_dicts(
+                            metadata_ref.get('roles', {}), True)
+                    except (exception.MetadataNotFound,
+                            exception.NotImplemented):
+                        pass
+
+            return role_list
+
+        def _get_user_sip_roles(user_id, sip_ref):
+            role_list = []
+            try:
+                metadata_ref = self._get_metadata(user_id=user_id,
+                                                  tenant_id=sip_ref['id'])
+                role_list = self._roles_from_role_dicts(
+                    metadata_ref.get('roles', {}), False)
+            except exception.MetadataNotFound:
+                pass
+
+            if CONF.os_inherit.enabled:
+                # Now get any inherited roles for the owning sid
+                try:
+                    metadata_ref = self._get_metadata(
+                        user_id=user_id, sid_id=sip_ref['sid_id'])
+                    role_list += self._roles_from_role_dicts(
+                        metadata_ref.get('roles', {}), True)
+                except (exception.MetadataNotFound, exception.NotImplemented):
+                    pass
+
+            return role_list
+
+        sip_ref = self.get_sip(tenant_id)
+        user_role_list = _get_user_sip_roles(user_id, sip_ref)
+        group_role_list = _get_group_sip_roles(user_id, sip_ref)
+        # Use set() to process the list to remove any duplicates
+        return list(set(user_role_list + group_role_list))
+
+    def get_roles_for_user_and_sid(self, user_id, sid_id):
+        """Get the roles associated with a user within given sid.
+
+        :returns: a list of role ids.
+        :raises: keystone.exception.UserNotFound,
+                 keystone.exception.DomainNotFound
+
+        """
+
+        def _get_group_sid_roles(user_id, sid_id):
+            role_list = []
+            group_refs = self.identity_api.list_groups_for_user(user_id)
+            for x in group_refs:
+                try:
+                    metadata_ref = self._get_metadata(group_id=x['id'],
+                                                      sid_id=sid_id)
+                    role_list += self._roles_from_role_dicts(
+                        metadata_ref.get('roles', {}), False)
+                except (exception.MetadataNotFound, exception.NotImplemented):
+                    # MetadataNotFound implies no group grant, so skip.
+                    # Ignore NotImplemented since not all backends support
+                    # sids.
+                    pass
+            return role_list
+
+        def _get_user_sid_roles(user_id, sid_id):
+            metadata_ref = {}
+            try:
+                metadata_ref = self._get_metadata(user_id=user_id,
+                                                  sid_id=sid_id)
+            except (exception.MetadataNotFound, exception.NotImplemented):
+                # MetadataNotFound implies no user grants.
+                # Ignore NotImplemented since not all backends support
+                # sids
+                pass
+            return self._roles_from_role_dicts(
+                metadata_ref.get('roles', {}), False)
+
+        self.get_sid(sid_id)
+        user_role_list = _get_user_sid_roles(user_id, sid_id)
+        group_role_list = _get_group_sid_roles(user_id, sid_id)
+        # Use set() to process the list to remove any duplicates
+        return list(set(user_role_list + group_role_list))
+
+    def add_user_to_sip(self, tenant_id, user_id):
+        """Add user to a tenant by creating a default role relationship.
+
+        :raises: keystone.exception.ProjectNotFound,
+                 keystone.exception.UserNotFound
+
+        """
+        try:
+            self.driver.add_role_to_user_and_sip(
+                user_id,
+                tenant_id,
+                config.CONF.member_role_id)
+        except exception.RoleNotFound:
+            LOG.info(_("Creating the default role %s "
+                       "because it does not exist."),
+                     config.CONF.member_role_id)
+            role = {'id': CONF.member_role_id,
+                    'name': CONF.member_role_name}
+            self.driver.create_role(config.CONF.member_role_id, role)
+            #now that default role exists, the add should succeed
+            self.driver.add_role_to_user_and_sip(
+                user_id,
+                tenant_id,
+                config.CONF.member_role_id)
+
+    def remove_user_from_sip(self, tenant_id, user_id):
+        """Remove user from a tenant
+
+        :raises: keystone.exception.ProjectNotFound,
+                 keystone.exception.UserNotFound
+
+        """
+        roles = self.get_roles_for_user_and_sip(user_id, tenant_id)
+        if not roles:
+            raise exception.NotFound(tenant_id)
+        for role_id in roles:
+            try:
+                self.driver.remove_role_from_user_and_sip(user_id,
+                                                              tenant_id,
+                                                              role_id)
+                if self.revoke_api:
+                    self.revoke_api.revoke_by_grant(role_id, user_id=user_id,
+                                                    sip_id=tenant_id)
+
+            except exception.RoleNotFound:
+                LOG.debug(_("Removing role %s failed because it does not "
+                            "exist."),
+                          role_id)
+
+    # TODO(henry-nash): We might want to consider list limiting this at some
+    # point in the future.
+    def list_sips_for_user(self, user_id, hints=None):
+        # NOTE(henry-nash): In order to get a complete list of user sips,
+        # the driver will need to look at group assignments.  To avoid cross
+        # calling between the assignment and identity driver we get the group
+        # list here and pass it in. The rest of the detailed logic of listing
+        # sips for a user is pushed down into the driver to enable
+        # optimization with the various backend technologies (SQL, LDAP etc.).
+
+        group_ids = [x['id'] for
+                     x in self.identity_api.list_groups_for_user(user_id)]
+        return self.driver.list_sips_for_user(
+            user_id, group_ids, hints or driver_hints.Hints())
+
+
+
+    @cache.on_arguments(should_cache_fn=SHOULD_CACHE,
+                        expiration_time=EXPIRATION_TIME)
+    def get_sid(self, sid_id):
+        return self.driver.get_sid(sid_id)
+
+    @cache.on_arguments(should_cache_fn=SHOULD_CACHE,
+                        expiration_time=EXPIRATION_TIME)
+    def get_sid_by_name(self, sid_name):
+        return self.driver.get_sid_by_name(sid_name)
+
+    @notifications.created('sid')
+    def create_sid(self, sid_id, sid):
+        ret = self.driver.create_sid(sid_id, sid)
+        if SHOULD_CACHE(ret):
+            self.get_sid.set(ret, self, sid_id)
+            self.get_sid_by_name.set(ret, self, ret['name'])
+        return ret
+
+
+    @manager.response_truncated
+    def list_sids(self, hints=None):
+        return self.driver.list_sids(hints or driver_hints.Hints())
+
+    @notifications.disabled('sid', public=False)
+    def _disable_sid(self, sid_id):
+        self.token_api.delete_tokens_for_sid(sid_id)
+
+    @notifications.updated('sid')
+    def update_sid(self, sid_id, sid):
+        ret = self.driver.update_sid(sid_id, sid)
+        # disable owned users & sips when the API user specifically set
+        #     enabled=False
+        if not sid.get('enabled', True):
+            self._disable_sid(sid_id)
+        self.get_sid.invalidate(self, sid_id)
+        self.get_sid_by_name.invalidate(self, ret['name'])
+        return ret
+
+    @notifications.deleted('sid')
+    def delete_sid(self, sid_id):
+        # explicitly forbid deleting the default sid (this should be a
+        # carefully orchestrated manual process involving configuration
+        # changes, etc)
+        #if sid_id == CONF.identity.default_sid_id:
+        #    raise exception.ForbiddenAction(action=_('delete the default '
+        #                                             'sid'))
+
+        sid = self.driver.get_sid(sid_id)
+
+        # To help avoid inadvertent deletes, we insist that the sid
+        # has been previously disabled.  This also prevents a user deleting
+        # their own sid since, once it is disabled, they won't be able
+        # to get a valid token to issue this delete.
+        if sid['enabled']:
+            raise exception.ForbiddenAction(
+                action=_('cannot delete a sid that is enabled, '
+                         'please disable it first.'))
+
+        self._delete_sid_contents(sid_id)
+        self.driver.delete_sid(sid_id)
+        self.get_sid.invalidate(self, sid_id)
+        self.get_sid_by_name.invalidate(self, sid['name'])
+
+    def _delete_sid_contents(self, sid_id):
+        """Delete the contents of a sid.
+
+        Before we delete a sid, we need to remove all the entities
+        that are owned by it, i.e. Users, Groups & Projects. To do this we
+        call the respective delete functions for these entities, which are
+        themselves responsible for deleting any credentials and role grants
+        associated with them as well as revoking any relevant tokens.
+
+        The order we delete entities is also important since some types
+        of backend may need to maintain referential integrity
+        throughout, and many of the entities have relationship with each
+        other. The following deletion order is therefore used:
+
+        Projects: Reference user and groups for grants
+        Groups: Reference users for membership and sids for grants
+        Users: Reference sids for grants
+
+        """
+        user_refs = self.identity_api.list_users()
+        proj_refs = self.list_sips()
+        group_refs = self.identity_api.list_groups()
+
+        # First delete the sips themselves
+        for sip in proj_refs:
+            if sip['sid_id'] == sid_id:
+                try:
+                    self.delete_sip(sip['id'])
+                except exception.ProjectNotFound:
+                    LOG.debug(_('Project %(sipid)s not found when '
+                                'deleting sid contents for %(sidid)s, '
+                                'continuing with cleanup.'),
+                              {'sipid': sip['id'],
+                               'sidid': sid_id})
+
+        for group in group_refs:
+            # Cleanup any existing groups.
+            if group['sid_id'] == sid_id:
+                try:
+                    self.identity_api.delete_group(group['id'],
+                                                   sid_scope=sid_id)
+                except exception.GroupNotFound:
+                    LOG.debug(_('Group %(groupid)s not found when deleting '
+                                'sid contents for %(sidid)s, continuing '
+                                'with cleanup.'),
+                              {'groupid': group['id'], 'sidid': sid_id})
+
+        # And finally, delete the users themselves
+        for user in user_refs:
+            if user['sid_id'] == sid_id:
+                try:
+                    self.identity_api.delete_user(user['id'],
+                                                  sid_scope=sid_id)
+                except exception.UserNotFound:
+                    LOG.debug(_('User %(userid)s not found when '
+                                'deleting sid contents for %(sidid)s, '
+                                'continuing with cleanup.'),
+                              {'userid': user['id'],
+                               'sidid': sid_id})
+
+
+    @manager.response_truncated
+    def list_sips(self, hints=None):
+        return self.driver.list_sips(hints or driver_hints.Hints())
+
+    # NOTE(henry-nash): list_sips_in_sid is actually an internal method
+    # and not exposed via the API.  Therefore there is no need to support
+    # driver hints for it.
+    def list_sips_in_sid(self, sid_id):
+        return self.driver.list_sips_in_sid(sid_id)
+
+    def list_user_sips(self, user_id, hints=None):
+        return self.driver.list_user_sips(
+            user_id, hints or driver_hints.Hints())
+
+    @cache.on_arguments(should_cache_fn=SHOULD_CACHE,
+                        expiration_time=EXPIRATION_TIME)
+    def get_sip(self, sip_id):
+        return self.driver.get_sip(sip_id)
+
+    @cache.on_arguments(should_cache_fn=SHOULD_CACHE,
+                        expiration_time=EXPIRATION_TIME)
+    def get_sip_by_name(self, tenant_name, sid_id):
+        return self.driver.get_sip_by_name(tenant_name, sid_id)
+
+    @cache.on_arguments(should_cache_fn=SHOULD_CACHE,
+                        expiration_time=EXPIRATION_TIME)
+
+
+
+    def remove_role_from_user_and_sip(self, user_id, tenant_id, role_id):
+        self.driver.remove_role_from_user_and_sip(user_id, tenant_id,
+                                                      role_id)
+        if CONF.token.revoke_by_id:
+            self.token_api.delete_tokens_for_user(user_id)
+        if self.revoke_api:
+            self.revoke_api.revoke_by_grant(role_id, user_id=user_id,
+                                            sip_id=tenant_id)
+
+
+    def delete_grant_4sip(self, role_id, user_id=None, group_id=None,
+                     sid_id=None, sip_id=None,
+                     inherited_to_sips=False):
+        user_ids = []
+        if group_id is None:
+            if self.revoke_api:
+                self.revoke_api.revoke_by_grant(user_id=user_id,
+                                                role_id=role_id,
+                                                sid_id=sid_id,
+                                                sip_id=sip_id)
+        else:
+            try:
+                # NOTE(morganfainberg): The user ids are the important part
+                # for invalidating tokens below, so extract them here.
+                for user in self.identity_api.list_users_in_group(group_id,
+                                                                  sid_id):
+                    if user['id'] != user_id:
+                        user_ids.append(user['id'])
+                        if self.revoke_api:
+                            self.revoke_api.revoke_by_grant(
+                                user_id=user['id'], role_id=role_id,
+                                sid_id=sid_id, sip_id=sip_id)
+            except exception.GroupNotFound:
+                LOG.debug(_('Group %s not found, no tokens to invalidate.'),
+                          group_id)
+
+        self.driver.delete_grant_4sip(role_id, user_id, group_id, sid_id,
+                                 sip_id, inherited_to_sips)
+        if user_id is not None:
+            user_ids.append(user_id)
+        self.token_api.delete_tokens_for_users(user_ids)
+
+    def _delete_tokens_for_role_4sip(self, role_id):
+        assignments = self.list_role_assignments_for_role(role_id=role_id)
+
+        # Iterate over the assignments for this role and build the list of
+        # user or user+sip IDs for the tokens we need to delete
+        user_ids = set()
+        user_and_sip_ids = list()
+        for assignment in assignments:
+            # If we have a sip assignment, then record both the user and
+            # sip IDs so we can target the right token to delete. If it is
+            # a sid assignment, we might as well kill all the tokens for
+            # the user, since in the vast majority of cases all the tokens
+            # for a user will be within one sid anyway, so not worth
+            # trying to delete tokens for each sip in the sid.
+            if 'user_id' in assignment:
+                if 'sip_id' in assignment:
+                    user_and_sip_ids.append(
+                        (assignment['user_id'], assignment['sip_id']))
+                elif 'sid_id' in assignment:
+                    user_ids.add(assignment['user_id'])
+            elif 'group_id' in assignment:
+                # Add in any users for this group, being tolerant of any
+                # cross-driver database integrity errors.
+                try:
+                    users = self.identity_api.list_users_in_group(
+                        assignment['group_id'])
+                except exception.GroupNotFound:
+                    # Ignore it, but log a debug message
+                    if 'sip_id' in assignment:
+                        target = _('Sip (%s)') % assignment['sip_id']
+                    elif 'sid_id' in assignment:
+                        target = _('Sid (%s)') % assignment['sid_id']
+                    else:
+                        target = _('Unknown Target')
+                    msg = _('Group (%(group)s), referenced in assignment '
+                            'for %(target)s, not found - ignoring.')
+                    LOG.debug(msg, {'group': assignment['group_id'],
+                                    'target': target})
+                    continue
+
+                if 'sip_id' in assignment:
+                    for user in users:
+                        user_and_sip_ids.append(
+                            (user['id'], assignment['sip_id']))
+                elif 'sid_id' in assignment:
+                    for user in users:
+                        user_ids.add(user['id'])
+
+        # Now process the built up lists.  Before issuing calls to delete any
+        # tokens, let's try and minimize the number of calls by pruning out
+        # any user+sip deletions where a general token deletion for that
+        # same user is also planned.
+        user_and_sip_ids_to_action = []
+        for user_and_sip_id in user_and_sip_ids:
+            if user_and_sip_id[0] not in user_ids:
+                user_and_sip_ids_to_action.append(user_and_sip_id)
+
+        self.token_api.delete_tokens_for_users(user_ids)
+        for user_id, sip_id in user_and_sip_ids_to_action:
+            self.token_api.delete_tokens_for_user(user_id, sip_id)
+
+    # end of sid & sip  
+
 
 
 @six.add_metaclass(abc.ABCMeta)
@@ -1022,3 +1510,166 @@ class Driver(object):
         """
         if domain_id != CONF.identity.default_domain_id:
             raise exception.DomainNotFound(domain_id=domain_id)
+
+
+    # add sid & sip functions 
+
+    def _role_to_dict_4sip(self, role_id, inherited):
+        role_dict = {'id': role_id}
+        if inherited:
+            role_dict['inherited_to'] = 'sips'
+        return role_dict
+
+    def _roles_from_role_dicts_4sip(self, dict_list, inherited):
+        role_list = []
+        for d in dict_list:
+            if ((not d.get('inherited_to') and not inherited) or
+               (d.get('inherited_to') == 'sips' and inherited)):
+                role_list.append(d['id'])
+        return role_list
+
+    @abc.abstractmethod
+    def get_sip_by_name(self, tenant_name, sid_id):
+        """Get a tenant by name.
+
+        :returns: tenant_ref
+        :raises: keystone.exception.SipNotFound
+
+        """
+        raise exception.NotImplemented()
+
+    @abc.abstractmethod
+    def list_user_ids_for_sip(self, tenant_id):
+        """Lists all user IDs with a role assignment in the specified sip.
+
+        :returns: a list of user_ids or an empty set.
+        :raises: keystone.exception.SipNotFound
+
+        """
+        raise exception.NotImplemented()
+
+    @abc.abstractmethod
+    def add_role_to_user_and_sip(self, user_id, tenant_id, role_id):
+        """Add a role to a user within given tenant.
+
+        :raises: keystone.exception.UserNotFound,
+                 keystone.exception.SipNotFound,
+                 keystone.exception.RoleNotFound
+        """
+        raise exception.NotImplemented()
+
+    @abc.abstractmethod
+    def remove_role_from_user_and_sip(self, user_id, tenant_id, role_id):
+        """Remove a role from a user within given tenant.
+
+        :raises: keystone.exception.UserNotFound,
+                 keystone.exception.SipNotFound,
+                 keystone.exception.RoleNotFound
+
+        """
+        raise exception.NotImplemented()
+
+    # assignment/grant crud
+
+    @abc.abstractmethod
+    def create_grant_4sip(self, role_id, user_id=None, group_id=None,
+                     sid_id=None, sip_id=None,
+                     inherited_to_sips=False):
+        """Creates a new assignment/grant.
+
+        If the assignment is to a sid, then optionally it may be
+        specified as inherited to owned sips (this requires
+        the OS-INHERIT extension to be enabled).
+
+        :raises: keystone.exception.SidNotFound,
+                 keystone.exception.SipNotFound,
+                 keystone.exception.RoleNotFound
+
+        """
+        raise exception.NotImplemented()
+
+    @abc.abstractmethod
+    def list_grants_4sip(self, user_id=None, group_id=None,
+                    sid_id=None, sip_id=None,
+                    inherited_to_sips=False):
+        """Lists assignments/grants.
+
+        :raises: keystone.exception.UserNotFound,
+                 keystone.exception.GroupNotFound,
+                 keystone.exception.SipNotFound,
+                 keystone.exception.SidNotFound,
+                 keystone.exception.RoleNotFound
+
+        """
+        raise exception.NotImplemented()
+
+    @abc.abstractmethod
+    def get_grant_4sip(self, role_id, user_id=None, group_id=None,
+                  sid_id=None, sip_id=None,
+                  inherited_to_sips=False):
+        """Lists assignments/grants.
+
+        :raises: keystone.exception.UserNotFound,
+                 keystone.exception.GroupNotFound,
+                 keystone.exception.SipNotFound,
+                 keystone.exception.SidNotFound,
+                 keystone.exception.RoleNotFound
+
+        """
+        raise exception.NotImplemented()
+
+    @abc.abstractmethod
+    def delete_grant_4sip(self, role_id, user_id=None, group_id=None,
+                     sid_id=None, sip_id=None,
+                     inherited_to_sips=False):
+        """Deletes assignments/grants.
+
+        :raises: keystone.exception.SipNotFound,
+                 keystone.exception.SidNotFound,
+                 keystone.exception.RoleNotFound
+
+        """
+        raise exception.NotImplemented()
+
+    @abc.abstractmethod
+    def list_role_assignments(self):
+
+        raise exception.NotImplemented()
+
+
+    #sid management functions for backends that only allow a single sid.
+    #currently, this is only LDAP, but might be used by PAM or other backends
+    #as well.  This is used by both identity and assignment drivers.
+    def _set_default_sid(self, ref):
+        """If the sid ID has not been set, set it to the default."""
+        if isinstance(ref, dict):
+            if 'sid_id' not in ref:
+                ref = ref.copy()
+                ref['sid_id'] = CONF.identity.default_sid_id
+            return ref
+        elif isinstance(ref, list):
+            return [self._set_default_sid(x) for x in ref]
+        else:
+            raise ValueError(_('Expected dict or list: %s') % type(ref))
+
+    def _validate_default_sid(self, ref):
+        """Validate that either the default sid or nothing is specified.
+
+        Also removes the sid from the ref so that LDAP doesn't have to
+        persist the attribute.
+
+        """
+        ref = ref.copy()
+        sid_id = ref.pop('sid_id', CONF.identity.default_sid_id)
+        self._validate_default_sid_id(sid_id)
+        return ref
+
+    def _validate_default_sid_id(self, sid_id):
+        """Validate that the sid ID specified belongs to the default sid.
+
+        """
+        if sid_id != CONF.identity.default_sid_id:
+            raise exception.SidNotFound(sid_id=sid_id)
+ 
+    # end of sid & sip 
+

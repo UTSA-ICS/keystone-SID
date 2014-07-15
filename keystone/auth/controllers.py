@@ -102,12 +102,14 @@ class AuthInfo(object):
     def __init__(self, context, auth=None):
         self.context = context
         self.auth = auth
-        self._scope_data = (None, None, None)
-        # self._scope_data is (domain_id, project_id, trust_ref)
-        # project scope: (None, project_id, None)
-        # domain scope: (domain_id, None, None)
-        # trust scope: (None, None, trust_ref)
-        # unscoped: (None, None, None)
+        self._scope_data = (None, None, None, None, None)
+        # self._scope_data is (domain_id, project_id, sid_id, sip_id, trust_ref)
+        # domain scope: (domain_id, None, None, None, None)
+        # project scope: (None, project_id, None, None, None)
+        # sid scope: (None, None, sid_id, None, None)
+        # sip scope: (None, None, None, sip_id, None)
+        # trust scope: (None, None, None, None, trust_ref)
+        # unscoped: (None, None, None, None, None)
 
     def _assert_project_is_enabled(self, project_ref):
         # ensure the project is enabled
@@ -164,6 +166,63 @@ class AuthInfo(object):
         self._assert_project_is_enabled(project_ref)
         return project_ref
 
+    # add sid & sip part 
+    def _assert_sip_is_enabled(self, sip_ref):
+        # ensure the sip is enabled
+        if not sip_ref.get('enabled', True):
+            msg = _('Sip is disabled: %s') % sip_ref['id']
+            LOG.warning(msg)
+            raise exception.Unauthorized(msg)
+
+    def _assert_sid_is_enabled(self, sid_ref):
+        if not sid_ref.get('enabled'):
+            msg = _('Sid is disabled: %s') % (sid_ref['id'])
+            LOG.warning(msg)
+            raise exception.Unauthorized(msg)
+
+    def _lookup_sid(self, sid_info):
+        sid_id = sid_info.get('id')
+        sid_name = sid_info.get('name')
+        sid_ref = None
+        if not sid_id and not sid_name:
+            raise exception.ValidationError(attribute='id or name',
+                                            target='sid')
+        try:
+            if sid_name:                    
+                sid_ref = self.assignment_api.get_sid_by_name(
+                    sid_name)
+            else:
+                sid_ref = self.assignment_api.get_sid(sid_id)
+        except exception.SidNotFound as e:          
+            LOG.exception(e) 
+            raise exception.Unauthorized(e)
+        self._assert_sid_is_enabled(sid_ref)
+        return sid_ref
+                
+    def _lookup_sip(self, sip_info):
+        sip_id = sip_info.get('id')
+        sip_name = sip_info.get('name')
+        sip_ref = None
+        if not sip_id and not sip_name:
+            raise exception.ValidationError(attribute='id or name',
+                                            target='sip')
+        try:
+            if sip_name:
+                if 'sid' not in sip_info:
+                    raise exception.ValidationError(attribute='sid',
+                                                    target='sip')
+                sid_ref = self._lookup_sid(sip_info['sid'])
+                sip_ref = self.assignment_api.get_sip_by_name(
+                    sip_name, sid_ref['id'])
+            else:
+                sip_ref = self.assignment_api.get_sip(sip_id)
+        except exception.ProjectNotFound as e:
+            LOG.exception(e)
+            raise exception.Unauthorized(e)
+        self._assert_sip_is_enabled(sip_ref)
+        return sip_ref
+
+
     def _lookup_trust(self, trust_info):
         trust_id = trust_info.get('id')
         if not trust_id:
@@ -180,17 +239,26 @@ class AuthInfo(object):
             return
         if sum(['project' in self.auth['scope'],
                 'domain' in self.auth['scope'],
+                'sip' in self.auth['scope'],
+                'sid' in self.auth['scope'],
                 'OS-TRUST:trust' in self.auth['scope']]) != 1:
             raise exception.ValidationError(
-                attribute='project, domain, or OS-TRUST:trust',
+                attribute='project, domain, sid, sip, or OS-TRUST:trust',
                 target='scope')
+	#print("!!!!!!!!!!!! _validate_and_normalize_scope_data: auth=", self.auth)
 
         if 'project' in self.auth['scope']:
             project_ref = self._lookup_project(self.auth['scope']['project'])
-            self._scope_data = (None, project_ref['id'], None)
+            self._scope_data = (None, project_ref['id'], None, None, None)
         elif 'domain' in self.auth['scope']:
             domain_ref = self._lookup_domain(self.auth['scope']['domain'])
-            self._scope_data = (domain_ref['id'], None, None)
+            self._scope_data = (domain_ref['id'], None, None, None, None)
+        elif 'sip' in self.auth['scope']:
+            sip_ref = self._lookup_sip(self.auth['scope']['sip'])
+            self._scope_data = (None, None, None, sip_ref['id'], None)
+        elif 'sid' in self.auth['scope']:
+            sid_ref = self._lookup_sid(self.auth['scope']['sid'])
+            self._scope_data = (None, None, sid_ref['id'], None, None)
         elif 'OS-TRUST:trust' in self.auth['scope']:
             if not CONF.trust.enabled:
                 raise exception.Forbidden('Trusts are disabled.')
@@ -200,9 +268,14 @@ class AuthInfo(object):
             if 'project_id' in trust_ref:
                 project_ref = self._lookup_project(
                     {'id': trust_ref['project_id']})
-                self._scope_data = (None, project_ref['id'], trust_ref)
+                self._scope_data = (None, project_ref['id'], None, None, trust_ref)
+            elif 'sip_id' in trust_ref:
+                sip_ref = self._lookup_sip(
+                    {'id': trust_ref['sip_id']})
+                self._scope_data = (None, None, None, sip_ref['id'], trust_ref)
             else:
-                self._scope_data = (None, None, trust_ref)
+                self._scope_data = (None, None, None, None, trust_ref)
+
 
     def _validate_auth_methods(self):
         if 'identity' not in self.auth:
@@ -265,20 +338,24 @@ class AuthInfo(object):
 
         Verify and return the scoping information.
 
-        :returns: (domain_id, project_id, trust_ref).
-                   If scope to a project, (None, project_id, None)
+        :returns: (domain_id, project_id, sid_id, sip_id, trust_ref).
+                   If scope to a project, (None, project_id, None, None, None)
                    will be returned.
-                   If scoped to a domain, (domain_id, None, None)
+                   If scoped to a domain, (domain_id, None, None, None, None)
                    will be returned.
-                   If scoped to a trust, (None, project_id, trust_ref),
+                   If scope to a sip, (None, None, None, sip_id, None)
+                   will be returned.
+                   If scope to a sid, (None, None, sid_id, None, None)
+                   will be returned.
+                   If scoped to a trust, (None, project_id, None, None, trust_ref),
                    Will be returned, where the project_id comes from the
                    trust definition.
-                   If unscoped, (None, None, None) will be returned.
+                   If unscoped, (None, None, None, None, None) will be returned.
 
         """
         return self._scope_data
 
-    def set_scope(self, domain_id=None, project_id=None, trust=None):
+    def set_scope(self, domain_id=None, project_id=None, sid_id=None, sip_id=None, trust=None):
         """Set scope information."""
         if domain_id and project_id:
             msg = _('Scoping to both domain and project is not allowed')
@@ -289,7 +366,16 @@ class AuthInfo(object):
         if project_id and trust:
             msg = _('Scoping to both project and trust is not allowed')
             raise ValueError(msg)
-        self._scope_data = (domain_id, project_id, trust)
+        if sid_id and sip_id:
+            msg = _('Scoping to both sid and sip is not allowed')
+            raise ValueError(msg)
+        if sid_id and trust:
+            msg = _('Scoping to both sid and trust is not allowed')
+            raise ValueError(msg)
+        if sip_id and trust:
+            msg = _('Scoping to both sip and trust is not allowed')
+            raise ValueError(msg)
+        self._scope_data = (domain_id, project_id, sid_id, sip_id, trust)
 
 
 @dependency.requires('assignment_api', 'identity_api', 'token_api',
@@ -322,9 +408,14 @@ class Auth(controller.V3Controller):
             auth_context = {'extras': {}, 'method_names': [], 'bind': {}}
             self.authenticate(context, auth_info, auth_context)
             if auth_context.get('access_token_id'):
-                auth_info.set_scope(None, auth_context['project_id'], None)
+		if auth_context.get('sip_id'):
+                    auth_info.set_scope(None, None, None, auth_context['sip_id'], None)
+		else:
+                    auth_info.set_scope(None, auth_context['project_id'], None, None, None)
             self._check_and_set_default_scoping(auth_info, auth_context)
-            (domain_id, project_id, trust) = auth_info.get_scope()
+            (domain_id, project_id, sid_id, sip_id, trust) = auth_info.get_scope()
+	    #print("!!!! authenticate_for_token: domain_id, project_id, sid_id, sip_id, trust")
+	    #print(domain_id, project_id, sid_id, sip_id, trust)
 
             if trust:
                 self.trust_api.consume_use(trust['id'])
@@ -340,7 +431,7 @@ class Auth(controller.V3Controller):
 
             (token_id, token_data) = self.token_provider_api.issue_v3_token(
                 auth_context['user_id'], method_names, expires_at, project_id,
-                domain_id, auth_context, trust, metadata_ref, include_catalog)
+                domain_id, sip_id, sid_id, auth_context, trust, metadata_ref, include_catalog)
 
             return render_token_data_response(token_id, token_data,
                                               created=True)
@@ -348,10 +439,10 @@ class Auth(controller.V3Controller):
             raise exception.Unauthorized(e)
 
     def _check_and_set_default_scoping(self, auth_info, auth_context):
-        (domain_id, project_id, trust) = auth_info.get_scope()
+        (domain_id, project_id, sid_id, sip_id, trust) = auth_info.get_scope()
         if trust:
             project_id = trust['project_id']
-        if domain_id or project_id or trust:
+        if domain_id or project_id or sid_id or sip_id or trust:
             # scope is specified
             return
 

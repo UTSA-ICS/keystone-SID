@@ -180,3 +180,21 @@ class Domain(Model):
 
     required_keys = ('id', 'name')
     optional_keys = ('description', 'enabled')
+
+
+class SID(Model):
+    """SID object.
+
+    Required keys:
+        id
+        name
+
+    Optional keys:
+
+        description
+        enabled (bool, default True)
+
+    """
+
+    required_keys = ('id', 'name')
+    optional_keys = ('description', 'enabled')

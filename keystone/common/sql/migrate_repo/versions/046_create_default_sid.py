@@ -24,36 +24,35 @@ CONF = config.CONF
 
 
 def upgrade(migrate_engine):
-    """Creates the default domain."""
+    """Creates the default sid."""
     meta = sql.MetaData()
     meta.bind = migrate_engine
 
-    domain_table = sql.Table('domain', meta, autoload=True)
+    sid_table = sql.Table('sid', meta, autoload=True)
 
-    domain = {
-        'id': CONF.identity.default_domain_id,
+    sid = {
+        'id': CONF.identity.default_sid_id,
         'name': 'Default',
         'enabled': True,
         'extra': json.dumps({
-            'description': 'Owns users and tenants (i.e. projects) available '
-                           'on Identity API v2.'})}
+            'description': 'It is default sid for all sips.'})}
 
     session = orm.sessionmaker(bind=migrate_engine)()
-    insert = domain_table.insert()
-    insert.execute(domain)
+    insert = sid_table.insert()
+    insert.execute(sid)
     session.commit()
 
 
 def downgrade(migrate_engine):
-    """Delete the default domain."""
+    """Delete the default sid."""
     meta = sql.MetaData()
     meta.bind = migrate_engine
 
-    sql.Table('domain', meta, autoload=True)
+    sql.Table('sid', meta, autoload=True)
     session = orm.sessionmaker(bind=migrate_engine)()
     session.execute(
-        'DELETE FROM domain WHERE id=:id',
-        {'id': CONF.identity.default_domain_id})
+        'DELETE FROM sid WHERE id=:id',
+        {'id': CONF.identity.default_sid_id})
     session.commit()
 
 

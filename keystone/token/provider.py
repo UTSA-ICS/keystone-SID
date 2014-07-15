@@ -129,6 +129,19 @@ class Manager(manager.Manager):
                 token_data, CONF.identity.default_domain_id)
             self.revoke_api.check_token(token_values)
 
+    # add sid & sip part
+    def check_revocation_v2_4sip(self, token):
+        try:
+            token_data = token['access']
+        except KeyError:
+            raise exception.TokenNotFound(_('Failed to validate token'))
+
+        if self.revoke_api is not None:
+            token_values = self.revoke_api.model.build_token_values_v2(
+                token_data, CONF.identity.default_sid_id)
+            self.revoke_api.check_token(token_values)
+    # end of sid & sip
+
     def validate_v2_token(self, token_id, belongs_to=None):
         unique_id = self.token_api.unique_id(token_id)
         # NOTE(morganfainberg): Ensure we never use the long-form token_id
@@ -315,6 +328,7 @@ class Provider(object):
         :returns: (token_id, token_data)
         """
         raise exception.NotImplemented()
+
 
     @abc.abstractmethod
     def revoke_token(self, token_id):

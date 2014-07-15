@@ -182,3 +182,128 @@ def append_v3_routers(mapper, routers):
     routers.append(
         router.Router(controllers.RoleAssignmentV3(),
                       'role_assignments', 'role_assignment'))
+
+
+    # add sid and sip routers
+    routers.append(
+        router.Router(controllers.SidV3(),
+                      'sids', 'sid'))
+
+    sip_controller = controllers.SipV3()
+    routers.append(
+        router.Router(sip_controller,
+                      'sips', 'sip'))
+    mapper.connect('/users/{user_id}/sips',
+                   controller=sip_controller,
+                   action='list_user_sips',
+                   conditions=dict(method=['GET']))
+
+    role_controller = controllers.RoleV3()
+    routers.append(router.Router(role_controller, 'roles', 'role'))
+    mapper.connect('/sips/{sip_id}/users/{user_id}/roles/{role_id}',
+                   controller=role_controller,
+                   action='create_grant_4sip',
+                   conditions=dict(method=['PUT']))
+    mapper.connect('/sips/{sip_id}/groups/{group_id}/roles/{role_id}',
+                   controller=role_controller,
+                   action='create_grant_4sip',
+                   conditions=dict(method=['PUT']))
+    mapper.connect('/sips/{sip_id}/users/{user_id}/roles/{role_id}',
+                   controller=role_controller,
+                   action='check_grant_4sip',
+                   conditions=dict(method=['HEAD']))
+    mapper.connect('/sips/{sip_id}/groups/{group_id}/roles/{role_id}',
+                   controller=role_controller,
+                   action='check_grant_4sip',
+                   conditions=dict(method=['HEAD']))
+    mapper.connect('/sips/{sip_id}/users/{user_id}/roles',
+                   controller=role_controller,
+                   action='list_grants_4sip',
+                   conditions=dict(method=['GET']))
+    mapper.connect('/sips/{sip_id}/groups/{group_id}/roles',
+                   controller=role_controller,
+                   action='list_grants_4sip',
+                   conditions=dict(method=['GET']))
+    mapper.connect('/sips/{sip_id}/users/{user_id}/roles/{role_id}',
+                   controller=role_controller,
+                   action='revoke_grant_4sip',
+                   conditions=dict(method=['DELETE']))
+    mapper.connect('/sips/{sip_id}/groups/{group_id}/roles/{role_id}',
+                   controller=role_controller,
+                   action='revoke_grant_4sip',
+                   conditions=dict(method=['DELETE']))
+    mapper.connect('/sids/{sid_id}/users/{user_id}/roles/{role_id}',
+                   controller=role_controller,
+                   action='create_grant_4sip',
+                   conditions=dict(method=['PUT']))
+    mapper.connect('/sids/{sid_id}/groups/{group_id}/roles/{role_id}',
+                   controller=role_controller,
+                   action='create_grant_4sip',
+                   conditions=dict(method=['PUT']))
+    mapper.connect('/sids/{sid_id}/users/{user_id}/roles/{role_id}',
+                   controller=role_controller,
+                   action='check_grant_4sip',
+                   conditions=dict(method=['HEAD']))
+    mapper.connect('/sids/{sid_id}/groups/{group_id}/roles/{role_id}',
+                   controller=role_controller,
+                   action='check_grant_4sip',
+                   conditions=dict(method=['HEAD']))
+    mapper.connect('/sids/{sid_id}/users/{user_id}/roles',
+                   controller=role_controller,
+                   action='list_grants_4sip',
+                   conditions=dict(method=['GET']))
+    mapper.connect('/sids/{sid_id}/groups/{group_id}/roles',
+                   controller=role_controller,
+                   action='list_grants_4sip',
+                   conditions=dict(method=['GET']))
+    mapper.connect('/sids/{sid_id}/users/{user_id}/roles/{role_id}',
+                   controller=role_controller,
+                   action='revoke_grant_4sip',
+                   conditions=dict(method=['DELETE']))
+    mapper.connect('/sids/{sid_id}/groups/{group_id}/roles/{role_id}',
+                   controller=role_controller,
+                   action='revoke_grant_4sip',
+                   conditions=dict(method=['DELETE']))
+
+    if config.CONF.os_inherit.enabled:
+        mapper.connect(('/OS-INHERIT/sids/{sid_id}/users/{user_id}'
+                        '/roles/{role_id}/inherited_to_sips'),
+                       controller=role_controller,
+                       action='create_grant_4sip',
+                       conditions=dict(method=['PUT']))
+        mapper.connect(('/OS-INHERIT/sids/{sid_id}/groups/{group_id}'
+                        '/roles/{role_id}/inherited_to_sips'),
+                       controller=role_controller,
+                       action='create_grant_4sip',
+                       conditions=dict(method=['PUT']))
+        mapper.connect(('/OS-INHERIT/sids/{sid_id}/users/{user_id}'
+                        '/roles/{role_id}/inherited_to_sips'),
+                       controller=role_controller,
+                       action='check_grant_4sip',
+                       conditions=dict(method=['HEAD']))
+        mapper.connect(('/OS-INHERIT/sids/{sid_id}/groups/{group_id}'
+                        '/roles/{role_id}/inherited_to_sips'),
+                       controller=role_controller,
+                       action='check_grant_4sip',
+                       conditions=dict(method=['HEAD']))
+        mapper.connect(('/OS-INHERIT/sids/{sid_id}/users/{user_id}'
+                        '/roles/inherited_to_sips'),
+                       controller=role_controller,
+                       action='list_grants_4sip',
+                       conditions=dict(method=['GET']))
+        mapper.connect(('/OS-INHERIT/sids/{sid_id}/groups/{group_id}'
+                        '/roles/inherited_to_sips'),
+                       controller=role_controller,
+                       action='list_grants_4sip',
+                       conditions=dict(method=['GET']))
+        mapper.connect(('/OS-INHERIT/sids/{sid_id}/users/{user_id}'
+                        '/roles/{role_id}/inherited_to_sips'),
+                       controller=role_controller,
+                       action='revoke_grant_4sip',
+                       conditions=dict(method=['DELETE']))
+        mapper.connect(('/OS-INHERIT/sids/{sid_id}/groups/{group_id}'
+                        '/roles/{role_id}/inherited_to_sips'),
+                       controller=role_controller,
+                       action='revoke_grant_4sip',
+                       conditions=dict(method=['DELETE']))
+
