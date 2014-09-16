@@ -70,16 +70,6 @@ def project_name(name):
 def project_enabled(enabled):
     return check_enabled('Project', enabled)
 
-# add sid & sip attribute  
-def sid_name(name):
-    return check_name('Sid', name)
-
-def sip_name(name):
-    return check_name('Sip', name)
-
-def sip_enabled(enabled):
-    return check_enabled('Sip', enabled)
-# end of sid & sip 
 
 def user_name(name):
     return check_name('User', name, max_length=255)

@@ -849,9 +849,25 @@ class GenericCheck(Check):
             'Member':%(role.name)s
         """
 
+        print("!!!! GenericCheck: creds=", creds)
+        print("!!!! GenericCheck: target, self.match=", target, self.match)
         # TODO(termie): do dict inspection via dot syntax
         try:
+#            if "%" in self.match:
+#                start = self.match.find('(') + 1
+#                end = self.match.find(')')
+#                id = self.match[start:end]  
+#
+#               print("!!!! GenericCheck1: id=", id)
+#               if id in creds.keys():
+#                   match1 = creds[id]
+#               else: 
+#                   match1 = self.match
+#                match = match1 % target
+#           else:
+#                match = self.match % target
             match = self.match % target
+            print("!!!! GenericCheck1: [match = self.match % target]: match=", match)
         except KeyError:
             # While doing GenericCheck if key not
             # present in Target return false
@@ -860,9 +876,15 @@ class GenericCheck(Check):
         try:
             # Try to interpret self.kind as a literal
             leftval = ast.literal_eval(self.kind)
+            print("!!!! GenericCheck2: [leftval = ast.literal_eval(self.kind)]: self.kind=", self.kind)
         except ValueError:
             try:
                 leftval = creds[self.kind]
+                print("!!!! GenericCheck3, [leftval = creds[self.kind]]: creds[self.kind]=", creds[self.kind])
             except KeyError:
                 return False
+        print("!!!! GenericCheck4: [return match == six.text_type(leftval)]")
+        print("!!!! GenericCheck4: match=", match)
+        print("!!!! GenericCheck4: six.text_type(leftval)=", six.text_type(leftval))
         return match == six.text_type(leftval)
+ 

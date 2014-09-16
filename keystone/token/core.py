@@ -67,9 +67,6 @@ def validate_auth_info(self, user_ref, tenant_ref):
     :raises Unauthorized: if any of the user, user's domain, tenant or
             tenant's domain are either disabled or otherwise invalid
     """
-    print("!!!!!!!!! user_ref=", user_ref)
-    print("!!!!!!!!! tenant_ref=", tenant_ref)
-
     # If the user is disabled don't allow them to authenticate
     if not user_ref.get('enabled', True):
         msg = _('User is disabled: %s') % user_ref['id']
@@ -100,31 +97,6 @@ def validate_auth_info(self, user_ref, tenant_ref):
             LOG.warning(msg)
             raise exception.Unauthorized(msg)
 
-    # add sid & sid part 
-    # If the user's sid is disabled don't allow them to authenticate
-    if 'sid_id' in user_ref.keys():
-        user_sid_ref = self.assignment_api.get_sid(user_ref['sid_id'])
-        if user_sid_ref and not user_sid_ref.get('enabled', True):
-            msg = _('Sid is disabled: %s') % user_sid_ref['id']
-            LOG.warning(msg)
-            raise exception.Unauthorized(msg)
-
-    if 'sid_id' in tenant_ref.keys():
-        if tenant_ref:
-            # If the sip is disabled don't allow them to authenticate
-            if not tenant_ref.get('enabled', True):
-                msg = _('Sip is disabled: %s') % tenant_ref['id']
-                LOG.warning(msg)
-                raise exception.Unauthorized(msg)
-
-           # If the sip's sid is disabled don't allow them to authenticate
-            sip_sid_ref = self.assignment_api.get_sid(tenant_ref['sid_id'])
-            if (sip_sid_ref and 
-                    not sip_sid_ref.get('enabled', True)):
-                msg = _('Sid is disabled: %s') % sip_sid_ref['id']
-                LOG.warning(msg)
-                raise exception.Unauthorized(msg)
-   # end of sid & sip 
 
 @dependency.requires('assignment_api', 'identity_api', 'token_provider_api',
                      'trust_api')
@@ -275,61 +247,6 @@ class Manager(manager.Manager):
             return
         for user_id in user_ids:
             self.delete_tokens_for_user(user_id, project_id=project_id)
-
-    # add sid & sip part
-    def delete_tokens_for_sid(self, sid_id):
-        """Delete all tokens for a given sid."""
-        if not CONF.token.revoke_by_id:
-            return
-        sips = self.assignment_api.list_sips()
-        for sip in sips:
-            if sip['sid_id'] == sid_id:
-                for user_id in self.assignment_api.list_user_ids_for_sip(
-                        sip['id']):
-                    self.delete_tokens_for_user(user_id, sip['id'])
-        # TODO(morganfainberg): implement deletion of sid_scoped tokens.
-
-    def delete_tokens_for_user_4sip(self, user_id, sip_id=None):
-        """Delete all tokens for a given user or user-sip combination.
-
-        This method adds in the extra logic for handling trust-scoped token
-        revocations in a single call instead of needing to explicitly handle
-        trusts in the caller's logic.
-        """
-        if not CONF.token.revoke_by_id:
-            return
-        self.delete_tokens(user_id, tenant_id=sip_id)
-        for trust in self.trust_api.list_trusts_for_trustee(user_id):
-            # Ensure we revoke tokens associated to the trust / sip
-            # user_id combination.
-            self.delete_tokens(user_id, trust_id=trust['id'],
-                               tenant_id=sip_id)
-        for trust in self.trust_api.list_trusts_for_trustor(user_id):
-            # Ensure we revoke tokens associated to the trust / sip /
-            # user_id combination where the user_id is the trustor.
-
-            # NOTE(morganfainberg): This revocation is a bit coarse, but it
-            # covers a number of cases such as disabling of the trustor user,
-            # deletion of the trustor user (for any number of reasons). It
-            # might make sense to refine this and be more surgical on the
-            # deletions (e.g. don't revoke tokens for the trusts when the
-            # trustor changes password). For now, to maintain previous
-            # functionality, this will continue to be a bit overzealous on
-            # revocations.
-            self.delete_tokens(trust['trustee_user_id'], trust_id=trust['id'],
-                               tenant_id=sip_id)
-
-    def delete_tokens_for_users_4sip(self, user_ids, sip_id=None):
-        """Delete all tokens for a list of user_ids.
-
-        :param user_ids: list of user identifiers
-        :param sip_id: optional sip identifier
-        """
-        if not CONF.token.revoke_by_id:
-            return
-        for user_id in user_ids:
-            self.delete_tokens_for_user_4sip(user_id, sip_id=sip_id)
-    # end of sid & sip 
 
     def _invalidate_individual_token_cache(self, token_id):
         # NOTE(morganfainberg): invalidate takes the exact same arguments as

@@ -73,6 +73,7 @@ class DefaultDomain(Base):
         user_ref = self.identity_api.get_user_by_name(remote_user, domain_id)
         return user_ref
 
+
 @dependency.requires('assignment_api', 'identity_api')
 class Domain(Base):
     def _authenticate(self, remote_user, context):
@@ -93,38 +94,6 @@ class Domain(Base):
 
         user_ref = self.identity_api.get_user_by_name(username, domain_id)
         return user_ref
-
-
-# add sid part
-@dependency.requires('identity_api')
-class DefaultSid(Base):
-    def _authenticate(self, remote_user, context):
-        """Use remote_user to look up the user in the identity backend."""
-        sid_id = CONF.identity.default_sid_id
-        user_ref = self.identity_api.get_user_by_name(remote_user, sid_id)
-        return user_ref
-
-@dependency.requires('assignment_api', 'identity_api')
-class SID(Base):
-    def _authenticate(self, remote_user, context):
-        """Use remote_user to look up the user in the identity backend.
-
-        The sid will be extracted from the REMOTE_DOMAIN environment
-        variable if present. If not, the default sid will be used.
-        """
-
-        username = remote_user
-        try:
-            sid_name = context['environment']['REMOTE_DOMAIN']
-        except KeyError:
-            sid_id = CONF.identity.default_sid_id
-        else:
-            sid_ref = self.assignment_api.get_sid_by_name(sid_name)
-            sid_id = sid_ref['id']
-
-        user_ref = self.identity_api.get_user_by_name(username, sid_id)
-        return user_ref
-# end of sid part
 
 
 class ExternalDefault(DefaultDomain):

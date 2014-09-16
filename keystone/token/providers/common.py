@@ -11,7 +11,7 @@
 # WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 # License for the specific language governing permissions and limitations
 # under the License.
-import traceback
+
 import json
 import sys
 
@@ -152,21 +152,8 @@ class V3TokenDataHelper(object):
             project_ref['domain_id'])
         return filtered_project
 
-    def _get_filtered_sid(self, sid_id):
-        sid_ref = self.assignment_api.get_sid(sid_id)
-        return {'id': sid_ref['id'], 'name': sid_ref['name']}
-
-    def _get_filtered_sip(self, sip_id):
-        sip_ref = self.assignment_api.get_sip(sip_id)
-        filtered_sip = {
-            'id': sip_ref['id'],
-            'name': sip_ref['name']}
-        filtered_sip['sid'] = self._get_filtered_sid(
-            sip_ref['sid_id'])
-        return filtered_sip
-
-    def _populate_scope(self, token_data, domain_id, project_id, sid_id, sip_id):
-        if 'domain' in token_data or 'project' in token_data or 'sid' in token_data or 'sip' in token_data:
+    def _populate_scope(self, token_data, domain_id, project_id):
+        if 'domain' in token_data or 'project' in token_data:
             # scope already exist, no need to populate it again
             return
 
@@ -174,12 +161,8 @@ class V3TokenDataHelper(object):
             token_data['domain'] = self._get_filtered_domain(domain_id)
         if project_id:
             token_data['project'] = self._get_filtered_project(project_id)
-        if sid_id:
-            token_data['sid'] = self._get_filtered_sid(sid_id)
-        if sip_id:
-            token_data['sip'] = self._get_filtered_sip(sip_id)
 
-    def _get_roles_for_user(self, user_id, domain_id, project_id, sid_id, sip_id):
+    def _get_roles_for_user(self, user_id, domain_id, project_id):
         roles = []
         if domain_id:
             roles = self.assignment_api.get_roles_for_user_and_domain(
@@ -187,12 +170,6 @@ class V3TokenDataHelper(object):
         if project_id:
             roles = self.assignment_api.get_roles_for_user_and_project(
                 user_id, project_id)
-        if sid_id:
-            roles = self.assignment_api.get_roles_for_user_and_sid(
-                user_id, sid_id)
-        if sip_id:
-            roles = self.assignment_api.get_roles_for_user_and_sip(
-                user_id, sip_id)
         return [self.assignment_api.get_role(role_id) for role_id in roles]
 
     def _populate_roles_for_groups(self, group_ids,
@@ -257,7 +234,7 @@ class V3TokenDataHelper(object):
                                         'consumer_id': consumer_id})
 
     def _populate_roles(self, token_data, user_id, domain_id, project_id,
-                        sid_id, sip_id, trust, access_token):
+                        trust, access_token):
         if 'roles' in token_data:
             # no need to repopulate roles
             return
@@ -283,15 +260,11 @@ class V3TokenDataHelper(object):
             token_user_id = user_id
             token_project_id = project_id
             token_domain_id = domain_id
-            token_sip_id = sip_id
-            token_sid_id = sid_id
 
-        if token_domain_id or token_project_id or token_sid_id or token_sip_id:
+        if token_domain_id or token_project_id:
             roles = self._get_roles_for_user(token_user_id,
                                              token_domain_id,
-                                             token_project_id,
-                                             token_sid_id,
-                                             token_sip_id)
+                                             token_project_id)
             filtered_roles = []
             if CONF.trust.enabled and trust:
                 for trust_role in trust['roles']:
@@ -314,36 +287,25 @@ class V3TokenDataHelper(object):
                             'to project %(project_id)s') % {
                                 'user_id': user_id,
                                 'project_id': token_project_id}
-                elif token_domain_id:
+                else:
                     msg = _('User %(user_id)s has no access '
                             'to domain %(domain_id)s') % {
                                 'user_id': user_id,
                                 'domain_id': token_domain_id}
-                elif token_sip_id:
-                    msg = _('User %(user_id)s has no access '
-                            'to sip %(sip_id)s') % {
-                                'user_id': user_id,
-                                'sip_id': token_sip_id}
-                else:
-                    msg = _('User %(user_id)s has no access '
-                            'to sid %(sid_id)s') % {
-                                'user_id': user_id,
-                                'sid_id': token_sid_id}
-
                 LOG.debug(msg)
                 raise exception.Unauthorized(msg)
 
             token_data['roles'] = filtered_roles
 
     def _populate_service_catalog(self, token_data, user_id,
-                                  domain_id, project_id, sid_id, sip_id, trust):
+                                  domain_id, project_id, trust):
         if 'catalog' in token_data:
             # no need to repopulate service catalog
             return
 
         if CONF.trust.enabled and trust:
             user_id = trust['trustor_user_id']
-        if project_id or domain_id or sid_id or sip_id:
+        if project_id or domain_id:
             try:
                 service_catalog = self.catalog_api.get_v3_catalog(
                     user_id, project_id)
@@ -362,8 +324,7 @@ class V3TokenDataHelper(object):
         token_data['issued_at'] = timeutils.isotime(subsecond=True)
 
     def get_token_data(self, user_id, method_names, extras,
-                       domain_id=None, project_id=None,
-                       sid_id=None, sip_id=None, expires=None,
+                       domain_id=None, project_id=None, expires=None,
                        trust=None, token=None, include_catalog=True,
                        bind=None, access_token=None):
         token_data = {'methods': method_names,
@@ -371,7 +332,7 @@ class V3TokenDataHelper(object):
 
         # We've probably already written these to the token
         if token:
-            for x in ('roles', 'user', 'catalog', 'project', 'domain', 'sip', 'sid'):
+            for x in ('roles', 'user', 'catalog', 'project', 'domain'):
                 if x in token:
                     token_data[x] = token[x]
 
@@ -382,13 +343,13 @@ class V3TokenDataHelper(object):
         if bind:
             token_data['bind'] = bind
 
-        self._populate_scope(token_data, domain_id, project_id, sid_id, sip_id)
+        self._populate_scope(token_data, domain_id, project_id)
         self._populate_user(token_data, user_id, trust)
-        self._populate_roles(token_data, user_id, domain_id, project_id, sid_id, sip_id, trust,
+        self._populate_roles(token_data, user_id, domain_id, project_id, trust,
                              access_token)
         if include_catalog:
             self._populate_service_catalog(token_data, user_id, domain_id,
-                                           project_id, sid_id, sip_id, trust)
+                                           project_id, trust)
         self._populate_token_dates(token_data, expires=expires, trust=trust)
         self._populate_oauth_section(token_data, access_token)
         return {'token': token_data}
@@ -454,8 +415,7 @@ class BaseProvider(provider.Provider):
         return (token_id, token_data)
 
     def issue_v3_token(self, user_id, method_names, expires_at=None,
-                       project_id=None, domain_id=None, 
-                       sip_id=None, sid_id=None, auth_context=None,
+                       project_id=None, domain_id=None, auth_context=None,
                        trust=None, metadata_ref=None, include_catalog=True):
         # for V2, trust is stashed in metadata_ref
         if (CONF.trust.enabled and not trust and metadata_ref and
@@ -475,15 +435,12 @@ class BaseProvider(provider.Provider):
             else:
                 raise exception.Forbidden(_('Oauth is disabled.'))
 
-	#traceback.print_stack()
         token_data = self.v3_token_data_helper.get_token_data(
             user_id,
             method_names,
             auth_context.get('extras') if auth_context else None,
             domain_id=domain_id,
             project_id=project_id,
-            sid_id=sid_id,
-            sip_id=sip_id,
             expires=expires_at,
             trust=trust,
             bind=auth_context.get('bind') if auth_context else None,
@@ -501,7 +458,7 @@ class BaseProvider(provider.Provider):
             role_ids = []
             if metadata_ref is None:
                 metadata_ref = {}
-            if 'project' or 'sip' in token_data['token']:
+            if 'project' in token_data['token']:
                 # project-scoped token, fill in the v2 token data
                 # all we care are the role IDs
                 role_ids = [r['id'] for r in token_data['token']['roles']]
@@ -510,22 +467,11 @@ class BaseProvider(provider.Provider):
                 metadata_ref.setdefault('trust_id', trust['id'])
                 metadata_ref.setdefault('trustee_user_id',
                                         trust['trustee_user_id'])
-	    if 'project' in token_data['token']:
-                data = dict(key=token_id,
+            data = dict(key=token_id,
                         id=token_id,
                         expires=expiry,
                         user=token_data['token']['user'],
                         tenant=token_data['token'].get('project'),
-                        metadata=metadata_ref,
-                        token_data=token_data,
-                        trust_id=trust['id'] if trust else None,
-                        token_version=token.provider.V3)
-	    elif 'sip' in token_data['token']:
-                data = dict(key=token_id,
-                        id=token_id,
-                        expires=expiry,
-                        user=token_data['token']['user'],
-                        tenant=token_data['token'].get('sip'),
                         metadata=metadata_ref,
                         token_data=token_data,
                         trust_id=trust['id'] if trust else None,

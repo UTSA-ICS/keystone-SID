@@ -225,9 +225,11 @@ class ProjectNotFound(NotFound):
 class SidNotFound(NotFound):
     message_format = _("Could not find sid, %(sid_id)s.")
 
-
 class SipNotFound(NotFound):
     message_format = _("Could not find sip, %(sip_id)s.")
+
+class MemberDomainNotFound(NotFound):
+    message_format = _("Sid could not find user's home domain, %(domain_id)s.")
 
 
 class TokenNotFound(NotFound):

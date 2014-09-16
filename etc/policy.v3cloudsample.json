@@ -87,10 +87,6 @@
     "identity:list_grants": "rule:cloud_admin or rule:domain_admin_for_grants or rule:project_admin_for_grants",
     "identity:create_grant": "rule:cloud_admin or rule:domain_admin_for_grants or rule:project_admin_for_grants",
     "identity:revoke_grant": "rule:cloud_admin or rule:domain_admin_for_grants or rule:project_admin_for_grants",
-    "identity:check_grant_4sip": "rule:cloud_admin or rule:domain_admin_for_grants",
-    "identity:list_grants_4sip": "rule:cloud_admin or rule:domain_admin_for_grants",
-    "identity:create_grant_4sip": "rule:cloud_admin or rule:domain_admin_for_grants",
-    "identity:revoke_grant_4sip": "rule:cloud_admin or rule:domain_admin_for_grants",
 
     "admin_on_domain_filter" : "rule:cloud_admin or (rule:admin_required and domain_id:%(scope.domain.id)s)",
     "admin_on_project_filter" : "rule:cloud_admin or (rule:admin_required and project_id:%(scope.project.id)s)",

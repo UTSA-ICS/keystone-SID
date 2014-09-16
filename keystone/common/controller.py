@@ -585,67 +585,6 @@ class V3Controller(wsgi.Application):
         """Override v2 filter to let domain_id out for v3 calls."""
         return ref
 
-
-    # add sid functions for sips   
-    def _require_matching_sid_id(self, ref_id, ref, get_member):
-        """Ensure the current sid ID matches the reference one, if any.
-
-        Provided we want sid IDs to be immutable, check whether any
-        sid_id specified in the ref dictionary matches the existing
-        sid_id for this entity.
-
-        :param ref_id: the ID of the entity
-        :param ref: the dictionary of new values proposed for this entity
-        :param get_member: The member function to call to get the current
-                           entity
-        :raises: :class:`keystone.exception.ValidationError`
-
-        """
-        # TODO(henry-nash): It might be safer and more efficient to do this
-        # check in the managers affected, so look to migrate this check to
-        # there in the future.
-        if CONF.sid_id_immutable and 'sid_id' in ref:
-            existing_ref = get_member(ref_id)
-            if ref['sid_id'] != existing_ref['sid_id']:
-                raise exception.ValidationError(_('Cannot change Domain ID'))
-
-    def _get_sid_id_for_request(self, context):
-        """Get the sid_id for a v3 call."""
-
-        if context['is_admin']:
-            return CONF.identity.default_sid_id
-
-        # Fish the sid_id out of the token
-        #
-        # We could make this more efficient by loading the sid_id
-        # into the context in the wrapper function above (since
-        # this version of normalize_sid will only be called inside
-        # a v3 protected call).  However, this optimization is probably not
-        # worth the duplication of state
-        try:
-            token_ref = self.token_api.get_token(context['token_id'])
-        except exception.TokenNotFound:
-            LOG.warning(_('Invalid token in _get_sid_id_for_request'))
-            raise exception.Unauthorized()
-
-        if 'sid' in token_ref:
-            return token_ref['sid']['id']
-        else:
-            return CONF.identity.default_sid_id
-
-    def _normalize_sid_id(self, context, ref):
-        """Fill in sid_id if not specified in a v3 call."""
-        if 'sid_id' not in ref:
-            ref['sid_id'] = self._get_sid_id_for_request(context)
-        return ref
-
-    @staticmethod
-    def filter_sid_id(ref):
-        """Override v2 filter to let sid_id out for v3 calls."""
-        return ref
-    # end of sid part 
-
-
     def check_protection(self, context, prep_info, target_attr=None):
         """Provide call protection for complex target attributes.
 

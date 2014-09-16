@@ -74,18 +74,18 @@ def v3_token_to_auth_context(token):
     except AttributeError:
         LOG.warning(_('RBAC: Invalid user data in v3 token'))
         raise exception.Unauthorized()
+
+    if 'user' in token_data:
+        creds['user.domain_id'] = token_data['user']['domain']['id']
     if 'project' in token_data:
         creds['project_id'] = token_data['project']['id']
+        creds['project.domain_id'] = token_data['project']['domain']['id']
+        creds['domain_id'] = token_data['project']['domain']['id']
     else:
         LOG.debug(_('RBAC: Proceeding without project'))
     if 'domain' in token_data:
         creds['domain_id'] = token_data['domain']['id']
-    if 'sip' in token_data:
-        creds['sip_id'] = token_data['sip']['id']
-    else:
-        LOG.debug(_('RBAC: Proceeding without sip'))
-    if 'sid' in token_data:
-        creds['sid_id'] = token_data['sid']['id']
+
     if 'roles' in token_data:
         creds['roles'] = []
         for role in token_data['roles']:
@@ -93,6 +93,7 @@ def v3_token_to_auth_context(token):
     creds['group_ids'] = [
         g['id'] for g in token_data['user'].get(federation.FEDERATION, {}).get(
             'groups', [])]
+    print("!!! In /opt/stack/keystone/keystone/common/authorization.py:v3_token_to_auth_context: creds=", creds)
     return creds
 
 

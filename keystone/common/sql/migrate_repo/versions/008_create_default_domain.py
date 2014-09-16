@@ -55,5 +55,3 @@ def downgrade(migrate_engine):
         'DELETE FROM domain WHERE id=:id',
         {'id': CONF.identity.default_domain_id})
     session.commit()
-
-

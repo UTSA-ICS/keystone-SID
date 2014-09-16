@@ -38,19 +38,6 @@
     "identity:update_project": "rule:admin_required",
     "identity:delete_project": "rule:admin_required",
 
-    "identity:get_sid": "rule:admin_required",
-    "identity:list_sids": "rule:admin_required",
-    "identity:create_sid": "rule:admin_required",
-    "identity:update_sid": "rule:admin_required",
-    "identity:delete_sid": "rule:admin_required",
-
-    "identity:get_sip": "rule:admin_required",
-    "identity:list_sips": "rule:admin_required",
-    "identity:list_user_sips": "rule:admin_or_owner",
-    "identity:create_sip": "rule:admin_required",
-    "identity:update_sip": "rule:admin_required",
-    "identity:delete_sip": "rule:admin_required",
-
     "identity:get_user": "rule:admin_required",
     "identity:list_users": "rule:admin_required",
     "identity:create_user": "rule:admin_required",
@@ -90,11 +77,6 @@
     "identity:list_grants": "rule:admin_required",
     "identity:create_grant": "rule:admin_required",
     "identity:revoke_grant": "rule:admin_required",
-
-    "identity:check_grant_4sip": "rule:admin_required",
-    "identity:list_grants_4sip": "rule:admin_required",
-    "identity:create_grant_4sip": "rule:admin_required",
-    "identity:revoke_grant_4sip": "rule:admin_required",
 
     "identity:list_role_assignments": "rule:admin_required",
 
